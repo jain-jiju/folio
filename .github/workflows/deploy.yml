@@ -3,7 +3,7 @@ name: Deploy JavaFX App to GitHub Pages
 on:
   push:
     branches:
-      - main  # Change this to master if your default branch is master
+      - main  # Runs automatically every time you push code to the main branch
 
 permissions:
   contents: write
@@ -11,12 +11,14 @@ permissions:
   id-token: write
 
 jobs:
-  build:
+  build_and_deploy:
     runs-on: ubuntu-latest
     steps:
+      # 1. Pull the raw source code down into the GitHub runner
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Install Java 17 (Matching your pom.xml target)
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -24,19 +26,20 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
 
+      # 3. Compile the source code and build the personal-finance-analyser.jar file
       - name: Build with Maven
         run: mvn clean package -DskipTests
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-
-      - name: Deploy to GitHub Pages via jDeploy
+      # 4. Install Node.js and jDeploy to convert the JAR into WebAssembly
+      - name: Convert JAR to Browser WebApp
         run: |
           npm install -g jdeploy
-          # This automatically compiles your app into WebAssembly and pushes it to your GitHub site
-          jdeploy gh-deploy
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          jdeploy web package
+
+      # 5. Take the generated web folder and push it live to the gh-pages branch
+      - name: Deploy Compiled Layout to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: dist/web # Location where jDeploy outputs the HTML/JS bundle
+          branch: gh-pages # Target branch for your website
 
