@@ -48,11 +48,20 @@
             <version>2.10.1</version>
         </dependency>
 
-        <!-- PDF report generation (Apache License 2.0) -->
+        <!-- PDF report generation AND password-protected statement parsing (Update 1) -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
             <version>2.0.31</version>
+        </dependency>
+
+        <!-- Jakarta Mail - IMAP email retrieval for automated bank-statement sync (Update 1).
+             This artifact bundles both the jakarta.mail API and its implementation,
+             so no separate "javax.activation"/"angus-mail" dependency is needed. -->
+        <dependency>
+            <groupId>com.sun.mail</groupId>
+            <artifactId>jakarta.mail</artifactId>
+            <version>2.0.1</version>
         </dependency>
     </dependencies>
 

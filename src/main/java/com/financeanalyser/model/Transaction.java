@@ -9,9 +9,15 @@ public class Transaction {
     private String paymentMethod;   // "UPI", "Card", "Cash"
     private String transactionDate; // ISO yyyy-MM-dd
     private String notes;
+    private String tag; // "Needs", "Wants", or null (Update 3 - Needs vs. Wants mission)
 
     public Transaction(int transactionId, int userId, double amount, String category,
                         String transactionType, String paymentMethod, String transactionDate, String notes) {
+        this(transactionId, userId, amount, category, transactionType, paymentMethod, transactionDate, notes, null);
+    }
+
+    public Transaction(int transactionId, int userId, double amount, String category,
+                        String transactionType, String paymentMethod, String transactionDate, String notes, String tag) {
         this.transactionId = transactionId;
         this.userId = userId;
         this.amount = amount;
@@ -20,6 +26,7 @@ public class Transaction {
         this.paymentMethod = paymentMethod;
         this.transactionDate = transactionDate;
         this.notes = notes;
+        this.tag = tag;
     }
 
     public int getTransactionId() { return transactionId; }
@@ -30,6 +37,7 @@ public class Transaction {
     public String getPaymentMethod() { return paymentMethod; }
     public String getTransactionDate() { return transactionDate; }
     public String getNotes() { return notes; }
+    public String getTag() { return tag; }
 
     public void setAmount(double amount) { this.amount = amount; }
     public void setCategory(String category) { this.category = category; }
@@ -37,4 +45,5 @@ public class Transaction {
     public void setPaymentMethod(String paymentMethod) { this.paymentMethod = paymentMethod; }
     public void setTransactionDate(String transactionDate) { this.transactionDate = transactionDate; }
     public void setNotes(String notes) { this.notes = notes; }
+    public void setTag(String tag) { this.tag = tag; }
 }

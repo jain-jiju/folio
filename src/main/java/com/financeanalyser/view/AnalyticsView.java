@@ -219,7 +219,7 @@ public class AnalyticsView extends VBox {
         double expectedPace = salary > 0 ? (salary / ForecastEngine.daysInMonth(LocalDate.now())) * daysElapsed : 0;
         double adherence = thisTotal > 0 ? Math.min(expectedPace / thisTotal * 100, 999) : 100;
         adherenceValue.setText(String.format("%.0f%%", adherence));
-        adherenceSub.setText(adherence < 100 ? "Above daily limit" : "Within daily limit");
+        adherenceSub.setText(adherence < 100 ? "Above daily target" : "Within daily target");
 
         drawVariance(monthBounds, prevBounds);
         drawAdherenceRing(daily, salary, thisTotal);
@@ -268,7 +268,7 @@ public class AnalyticsView extends VBox {
 
         ringPctLabel.setText(String.format("%.0f%%", usedPct));
         ringOuter.setFill(usedPct > 100 ? Color.web("#F1531F") : Color.web("#AECBFA"));
-        adherenceTargetLabel.setText(String.format("Daily Limit: \u20B9%,.0f", dailyTarget));
+        adherenceTargetLabel.setText(String.format("Daily target: \u20B9%,.0f", dailyTarget));
         if (over > 0) {
             adherenceHeadline.setText(String.format("You're \u20B9%,.0f over target", over));
         } else {

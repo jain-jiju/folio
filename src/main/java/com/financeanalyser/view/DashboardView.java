@@ -2,7 +2,8 @@ package com.financeanalyser.view;
 
 import com.financeanalyser.controller.ForecastEngine;
 import com.financeanalyser.controller.GamificationEngine;
-import com.financeanalyser.controller.MissionGenerator;
+import com.financeanalyser.controller.MissionEvaluator;
+import com.financeanalyser.model.Mission;
 import com.financeanalyser.db.DatabaseManager;
 import com.financeanalyser.model.CategoryTotal;
 import com.financeanalyser.model.DateTotal;
@@ -230,7 +231,7 @@ public class DashboardView extends VBox {
 
         HBox top = new HBox();
         VBox titleBox = new VBox(2);
-        Label eyebrow = new Label("SALARY SEGMENTATION");
+        Label eyebrow = new Label("AI SALARY SEGMENTATION");
         eyebrow.getStyleClass().add("block-eyebrow");
         planHeadline = new Label("Your plan");
         planHeadline.getStyleClass().add("block-title");
@@ -477,12 +478,16 @@ public class DashboardView extends VBox {
     }
 
     private void drawMission() {
-        List<MissionGenerator.Mission> missions = MissionGenerator.generateWeeklyMissions(db, userId);
-        if (missions.isEmpty()) return;
-        MissionGenerator.Mission top = missions.get(0);
-        missionHeadline.setText(top.title);
-        missionSub.setText(String.format("Stay under \u20B9%,.0f this week.", top.target));
-        missionAmountLabel.setText(String.format("\u20B9%,.0f of \u20B9%,.0f", top.progress, top.target));
-        missionBar.setProgress(top.target > 0 ? Math.min(1.0, top.progress / top.target) : 0);
+        List<Mission> missions = MissionEvaluator.evaluateWeekly(db, userId);
+        // Show the first mission that isn't finished yet, so the dashboard
+        // teaser always has something actionable left to show.
+        Mission top = missions.stream().filter(m -> !m.isCompleted()).findFirst()
+                .orElse(missions.isEmpty() ? null : missions.get(0));
+        if (top == null) return;
+        missionHeadline.setText(top.getTitle());
+        missionSub.setText(top.getDescription());
+        missionAmountLabel.setText(top.isCompleted() ? "Completed \u2713"
+                : String.format("\u20B9%,.0f of \u20B9%,.0f", top.getProgress(), top.getTarget()));
+        missionBar.setProgress(top.progressRatio());
     }
 }

@@ -44,19 +44,57 @@ public class DatabaseManager {
         } catch (SQLException ignored) {
             // column already exists - nothing to do
         }
+        // --- Update 1 (email import) / Update 3 (missions) columns ---
+        for (String alter : new String[]{
+                "ALTER TABLE transactions ADD COLUMN tag TEXT",
+                "ALTER TABLE transactions ADD COLUMN source_message_id TEXT",
+                "ALTER TABLE transactions ADD COLUMN dedup_hash TEXT"
+        }) {
+            try (Statement st = conn.createStatement()) {
+                st.execute(alter);
+            } catch (SQLException ignored) {
+                // column already exists - nothing to do
+            }
+        }
+        // CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS are idempotent,
+        // so these are safe to run unconditionally on every startup. Each gets its
+        // own Statement (see initSchema() for why) instead of one reused handle.
+        String[] migrations = {
+                "CREATE INDEX IF NOT EXISTS idx_transactions_dedup ON transactions(dedup_hash)",
+                "CREATE TABLE IF NOT EXISTS micro_savings_log (" +
+                        "saving_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, " +
+                        "log_date TEXT NOT NULL, amount_saved REAL NOT NULL, note TEXT, " +
+                        "created_at TEXT NOT NULL DEFAULT (datetime('now')), " +
+                        "FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)",
+                "CREATE TABLE IF NOT EXISTS email_sync_config (" +
+                        "user_id INTEGER PRIMARY KEY, imap_host TEXT, imap_port INTEGER DEFAULT 993, " +
+                        "email_address TEXT, app_password_enc TEXT, password_formula TEXT, " +
+                        "enabled INTEGER NOT NULL DEFAULT 0, last_sync_at TEXT, " +
+                        "FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)"
+        };
+        for (String sql : migrations) {
+            try (Statement st = conn.createStatement()) {
+                st.execute(sql);
+            } catch (SQLException e) {
+                throw new RuntimeException("Schema migration failed: " + e.getMessage(), e);
+            }
+        }
     }
 
     // ------------------------------------------------------------- setup
     private void initSchema() throws IOException, SQLException {
         String schemaSql = readResource("/schema.sql");
-        try (Statement st = conn.createStatement()) {
-            // sqlite-jdbc's Statement.execute() only runs a single statement reliably,
-            // so split the script on ";" and run each non-empty statement in turn.
-            for (String stmt : schemaSql.split(";")) {
-                String trimmed = stmt.trim();
-                if (!trimmed.isEmpty()) {
-                    st.execute(trimmed);
-                }
+        // sqlite-jdbc's Statement.execute() only runs a single statement reliably,
+        // so split the script on ";" and run each non-empty statement in turn.
+        // A fresh Statement per execute (rather than one reused across the whole
+        // loop) avoids a sqlite-jdbc 3.45.1.0 native-pointer finalization bug
+        // ("The prepared statement has been finalized") that a long reused loop
+        // can trigger.
+        for (String stmt : schemaSql.split(";")) {
+            String trimmed = stmt.trim();
+            if (trimmed.isEmpty()) continue;
+            try (Statement st = conn.createStatement()) {
+                st.execute(trimmed);
             }
         }
     }
@@ -245,7 +283,8 @@ public class DatabaseManager {
                 result.add(new Transaction(
                         rs.getInt("transaction_id"), rs.getInt("user_id"), rs.getDouble("amount"),
                         rs.getString("category"), rs.getString("transaction_type"),
-                        rs.getString("payment_method"), rs.getString("transaction_date"), rs.getString("notes")
+                        rs.getString("payment_method"), rs.getString("transaction_date"), rs.getString("notes"),
+                        rs.getString("tag")
                 ));
             }
         } catch (SQLException e) {
@@ -461,5 +500,244 @@ public class DatabaseManager {
 
     public void close() {
         try { conn.close(); } catch (SQLException ignored) { }
+    }
+
+    // ===================================================================
+    // UPDATE 1 - Automated email statement import & deduplication
+    // ===================================================================
+
+    /** SHA-256 of the fields that make a transaction "the same" for dedup purposes. */
+    public static String computeDedupHash(int userId, String date, double amount, String notes) {
+        String basis = userId + "|" + date + "|" + String.format("%.2f", amount) + "|"
+                + (notes == null ? "" : notes.trim().toLowerCase());
+        return sha256(basis);
+    }
+
+    /** True if a transaction with this message-id or dedup hash is already stored. */
+    public boolean isDuplicateTransaction(int userId, String messageId, String dedupHash) {
+        if (messageId != null && !messageId.isBlank()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT 1 FROM transactions WHERE user_id=? AND source_message_id=? LIMIT 1")) {
+                ps.setInt(1, userId);
+                ps.setString(2, messageId);
+                if (ps.executeQuery().next()) return true;
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        if (dedupHash != null && !dedupHash.isBlank()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT 1 FROM transactions WHERE user_id=? AND dedup_hash=? LIMIT 1")) {
+                ps.setInt(1, userId);
+                ps.setString(2, dedupHash);
+                if (ps.executeQuery().next()) return true;
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Inserts a transaction parsed from an email/PDF only if it isn't a duplicate
+     * of something already imported or logged manually. Returns true if a new row
+     * was inserted, false if it was skipped as a duplicate.
+     */
+    public boolean addTransactionIfNew(int userId, double amount, String category, String type,
+                                        String paymentMethod, String transactionDate, String notes,
+                                        String sourceMessageId) {
+        String date = (transactionDate == null || transactionDate.isEmpty())
+                ? LocalDate.now().toString() : transactionDate;
+        String dedupHash = computeDedupHash(userId, date, amount, notes);
+        if (isDuplicateTransaction(userId, sourceMessageId, dedupHash)) {
+            return false;
+        }
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO transactions (user_id, amount, category, transaction_type, payment_method, " +
+                        "transaction_date, notes, source_message_id, dedup_hash) VALUES (?,?,?,?,?,?,?,?,?)")) {
+            ps.setInt(1, userId);
+            ps.setDouble(2, amount);
+            ps.setString(3, category);
+            ps.setString(4, type);
+            ps.setString(5, paymentMethod);
+            ps.setString(6, date);
+            ps.setString(7, notes);
+            ps.setString(8, sourceMessageId);
+            ps.setString(9, dedupHash);
+            ps.executeUpdate();
+            return true;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void saveEmailSyncConfig(int userId, String imapHost, int imapPort, String emailAddress,
+                                     String appPasswordEnc, String passwordFormula, boolean enabled) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO email_sync_config (user_id, imap_host, imap_port, email_address, " +
+                        "app_password_enc, password_formula, enabled) VALUES (?,?,?,?,?,?,?) " +
+                        "ON CONFLICT(user_id) DO UPDATE SET imap_host=excluded.imap_host, " +
+                        "imap_port=excluded.imap_port, email_address=excluded.email_address, " +
+                        "app_password_enc=excluded.app_password_enc, password_formula=excluded.password_formula, " +
+                        "enabled=excluded.enabled")) {
+            ps.setInt(1, userId);
+            ps.setString(2, imapHost);
+            ps.setInt(3, imapPort);
+            ps.setString(4, emailAddress);
+            ps.setString(5, appPasswordEnc);
+            ps.setString(6, passwordFormula);
+            ps.setInt(7, enabled ? 1 : 0);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void touchEmailSyncLastRun(int userId) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE email_sync_config SET last_sync_at=? WHERE user_id=?")) {
+            ps.setString(1, java.time.LocalDateTime.now().toString());
+            ps.setInt(2, userId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** Returns null if the user has never configured email sync. */
+    public Map<String, String> getEmailSyncConfig(int userId) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM email_sync_config WHERE user_id=?")) {
+            ps.setInt(1, userId);
+            ResultSet rs = ps.executeQuery();
+            if (!rs.next()) return null;
+            Map<String, String> cfg = new HashMap<>();
+            cfg.put("imap_host", rs.getString("imap_host"));
+            cfg.put("imap_port", String.valueOf(rs.getInt("imap_port")));
+            cfg.put("email_address", rs.getString("email_address"));
+            cfg.put("app_password_enc", rs.getString("app_password_enc"));
+            cfg.put("password_formula", rs.getString("password_formula"));
+            cfg.put("enabled", String.valueOf(rs.getInt("enabled")));
+            cfg.put("last_sync_at", rs.getString("last_sync_at"));
+            return cfg;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // ===================================================================
+    // UPDATE 3 - Needs vs. Wants tagging, micro-savings log, baselines
+    // ===================================================================
+
+    /** Tags a transaction "Needs" or "Wants" for the Needs vs. Wants mission. */
+    public void tagTransaction(int transactionId, String tag) {
+        try (PreparedStatement ps = conn.prepareStatement("UPDATE transactions SET tag=? WHERE transaction_id=?")) {
+            ps.setString(1, tag);
+            ps.setInt(2, transactionId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** Count of expense transactions in [start,end] that already have a Needs/Wants tag. */
+    public int countTaggedTransactions(int userId, String start, String end) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT COUNT(*) AS c FROM transactions WHERE user_id=? AND transaction_type='Expense' " +
+                        "AND transaction_date BETWEEN ? AND ? AND tag IS NOT NULL AND tag != ''")) {
+            ps.setInt(1, userId);
+            ps.setString(2, start);
+            ps.setString(3, end);
+            ResultSet rs = ps.executeQuery();
+            rs.next();
+            return rs.getInt("c");
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** Count of all expense transactions in [start,end], tagged or not. */
+    public int countExpenseTransactions(int userId, String start, String end) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT COUNT(*) AS c FROM transactions WHERE user_id=? AND transaction_type='Expense' " +
+                        "AND transaction_date BETWEEN ? AND ?")) {
+            ps.setInt(1, userId);
+            ps.setString(2, start);
+            ps.setString(3, end);
+            ResultSet rs = ps.executeQuery();
+            rs.next();
+            return rs.getInt("c");
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /** True if the user has logged at least one transaction today - the Daily Micro-Check mission. */
+    public boolean hasLoggedToday(int userId) {
+        String today = LocalDate.now().toString();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT 1 FROM transactions WHERE user_id=? AND transaction_date=? LIMIT 1")) {
+            ps.setInt(1, userId);
+            ps.setString(2, today);
+            return ps.executeQuery().next();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public void recordMicroSaving(int userId, String logDate, double amountSaved, String note) {
+        String date = (logDate == null || logDate.isEmpty()) ? LocalDate.now().toString() : logDate;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO micro_savings_log (user_id, log_date, amount_saved, note) VALUES (?,?,?,?)")) {
+            ps.setInt(1, userId);
+            ps.setString(2, date);
+            ps.setDouble(3, amountSaved);
+            ps.setString(4, note);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    public double sumMicroSavings(int userId, String start, String end) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT COALESCE(SUM(amount_saved),0) AS total FROM micro_savings_log " +
+                        "WHERE user_id=? AND log_date BETWEEN ? AND ?")) {
+            ps.setInt(1, userId);
+            ps.setString(2, start);
+            ps.setString(3, end);
+            ResultSet rs = ps.executeQuery();
+            rs.next();
+            return rs.getDouble("total");
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Average weekly spend in a category over the last N completed weeks
+     * (excluding the current, in-progress week) - the user's own baseline,
+     * used by the "Beat Your Baseline" mission instead of a hardcoded cap.
+     */
+    public double averageWeeklySpend(int userId, String category, int weeksBack) {
+        LocalDate thisWeekStart = LocalDate.now().with(
+                java.time.temporal.TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+        LocalDate periodStart = thisWeekStart.minusWeeks(weeksBack);
+        LocalDate periodEnd = thisWeekStart.minusDays(1);
+        if (!periodStart.isBefore(periodEnd)) return 0;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE user_id=? " +
+                        "AND transaction_type='Expense' AND category=? AND transaction_date BETWEEN ? AND ?")) {
+            ps.setInt(1, userId);
+            ps.setString(2, category);
+            ps.setString(3, periodStart.toString());
+            ps.setString(4, periodEnd.toString());
+            ResultSet rs = ps.executeQuery();
+            rs.next();
+            double total = rs.getDouble("total");
+            return total / weeksBack;
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

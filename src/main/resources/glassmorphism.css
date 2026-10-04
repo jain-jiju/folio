@@ -366,31 +366,3 @@
 .default-color4.chart-pie { -fx-pie-color: #E7DCC3; }
 .default-color5.chart-pie { -fx-pie-color: #D8452B; }
 .default-color6.chart-pie { -fx-pie-color: #8C8C8C; }
-
-/* --- Chat visibility / message layout --- */
-.chat-panel {
-    -fx-padding: 10px;
-}
-.chat-scroll,
-.chat-scroll > .viewport {
-    -fx-background-color: transparent;
-    -fx-background: transparent;
-}
-.chat-scroll .content {
-    -fx-background-color: transparent;
-}
-.chat-panel .text-field {
-    -fx-background-color: #F7F7F7;
-    -fx-text-fill: #141414;
-    -fx-prompt-text-fill: #888888;
-    -fx-background-radius: 10px;
-    -fx-border-color: rgba(0,0,0,0.10);
-    -fx-border-radius: 10px;
-    -fx-padding: 9px 10px;
-}
-.chat-panel .button {
-    -fx-text-fill: #141414;
-}
-.chat-panel .btn-orange {
-    -fx-text-fill: white;
-}

@@ -2,7 +2,13 @@ package com.financeanalyser.view;
 
 import com.financeanalyser.controller.GeminiClient;
 import com.financeanalyser.db.DatabaseManager;
+import com.financeanalyser.email.EmailSyncConfig;
+import com.financeanalyser.email.ImportResult;
+import com.financeanalyser.email.StatementPasswordGenerator;
+import com.financeanalyser.email.TransactionImportService;
 import com.financeanalyser.model.User;
+import javafx.application.Platform;
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
@@ -18,6 +24,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.sql.SQLException;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
 
 public class SettingsView extends VBox {
 
@@ -55,6 +64,8 @@ public class SettingsView extends VBox {
 
         row2.getChildren().addAll(dataCard, rightCol);
         getChildren().add(row2);
+
+        getChildren().add(buildEmailSyncCard());
     }
 
     private VBox buildProfileCard() {
@@ -283,6 +294,97 @@ public class SettingsView extends VBox {
         top.getChildren().addAll(textBox, keyBox);
         top.setAlignment(Pos.CENTER_LEFT);
         card.getChildren().add(top);
+        return card;
+    }
+
+    private VBox buildEmailSyncCard() {
+        VBox card = new VBox(10);
+        card.getStyleClass().add("card-white");
+        card.setPadding(new Insets(18));
+
+        Label eyebrow = new Label("AUTOMATION · 04");
+        eyebrow.getStyleClass().add("block-eyebrow");
+        Label title = new Label("Bank email sync");
+        title.setStyle("-fx-font-weight: bold; -fx-font-size: 16px;");
+        Label info = new Label("Reads unread bank-alert emails over IMAP and logs transactions automatically. " +
+                "Credentials are stored locally (obfuscated, not plaintext) and never leave this device.");
+        info.getStyleClass().add("muted");
+        info.setWrapText(true);
+
+        Map<String, String> existing = db.getEmailSyncConfig(userId);
+
+        TextField hostInput = new TextField(existing != null ? existing.get("imap_host") : "imap.gmail.com");
+        hostInput.setPromptText("IMAP host (e.g. imap.gmail.com)");
+        TextField emailInput = new TextField(existing != null ? existing.get("email_address") : "");
+        emailInput.setPromptText("Your email address");
+        PasswordField appPwInput = new PasswordField();
+        appPwInput.setPromptText("App password (not your real password)");
+
+        Label pdfLabel = new Label("Statement PDF password formula (optional)");
+        pdfLabel.getStyleClass().add("muted");
+        TextField nameInputPdf = new TextField();
+        nameInputPdf.setPromptText("Full name (as on the statement)");
+        DatePicker dobInput = new DatePicker();
+        dobInput.setPromptText("Date of birth");
+        TextField mobileInput = new TextField();
+        mobileInput.setPromptText("Mobile number");
+
+        Button saveBtn = new Button("Save sync settings");
+        saveBtn.getStyleClass().add("btn-black");
+        Button syncNowBtn = new Button("Sync now");
+        syncNowBtn.getStyleClass().add("btn-orange");
+        Label statusLabel = new Label(existing != null && existing.get("last_sync_at") != null
+                ? "Last synced: " + existing.get("last_sync_at") : "Never synced yet.");
+        statusLabel.getStyleClass().add("muted");
+        statusLabel.setWrapText(true);
+
+        saveBtn.setOnAction(e -> {
+            String formulaHint = nameInputPdf.getText() + " + DOB + mobile (candidates auto-generated)";
+            db.saveEmailSyncConfig(userId, hostInput.getText().trim(), 993, emailInput.getText().trim(),
+                    EmailSyncConfig.obfuscate(appPwInput.getText()), formulaHint, true);
+            new Alert(Alert.AlertType.INFORMATION, "Email sync settings saved.").showAndWait();
+        });
+
+        syncNowBtn.setOnAction(e -> {
+            Map<String, String> cfg = db.getEmailSyncConfig(userId);
+            if (cfg == null || cfg.get("email_address") == null || cfg.get("email_address").isBlank()) {
+                new Alert(Alert.AlertType.WARNING, "Save your sync settings first.").showAndWait();
+                return;
+            }
+            EmailSyncConfig syncConfig = new EmailSyncConfig();
+            syncConfig.imapHost = cfg.get("imap_host");
+            syncConfig.imapPort = Integer.parseInt(cfg.get("imap_port"));
+            syncConfig.emailAddress = cfg.get("email_address");
+            syncConfig.appPassword = EmailSyncConfig.deobfuscate(cfg.get("app_password_enc"));
+
+            LocalDate dob = dobInput.getValue();
+            List<String> candidates = StatementPasswordGenerator.generateCandidates(
+                    nameInputPdf.getText(), dob, mobileInput.getText());
+
+            syncNowBtn.setDisable(true);
+            statusLabel.setText("Syncing...");
+            Task<ImportResult> task = new Task<>() {
+                @Override
+                protected ImportResult call() {
+                    TransactionImportService service = new TransactionImportService(db, userId, syncConfig, candidates);
+                    return service.syncNow();
+                }
+            };
+            task.setOnSucceeded(ev -> Platform.runLater(() -> {
+                statusLabel.setText(task.getValue().summary());
+                syncNowBtn.setDisable(false);
+            }));
+            task.setOnFailed(ev -> Platform.runLater(() -> {
+                statusLabel.setText("Sync failed: " + task.getException().getMessage());
+                syncNowBtn.setDisable(false);
+            }));
+            new Thread(task, "email-sync").start();
+        });
+
+        HBox buttonRow = new HBox(8, saveBtn, syncNowBtn);
+        card.getChildren().addAll(eyebrow, title, info, hostInput, emailInput, appPwInput,
+                pdfLabel, nameInputPdf, dobInput, mobileInput, buttonRow, statusLabel);
+        VBox.setVgrow(card, Priority.ALWAYS);
         return card;
     }
 

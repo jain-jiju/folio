@@ -29,6 +29,7 @@ public class TransactionsView extends VBox {
     private static final String[] CATEGORIES = {"Food", "Travel", "Utilities", "Subscriptions", "Shopping", "Training", "Misc"};
     private static final String[] TYPES = {"Income", "Expense"};
     private static final String[] PAYMENTS = {"UPI", "Card", "Cash"};
+    private static final String[] TAGS = {"", "Needs", "Wants"};
 
     private final DatabaseManager db;
     private final int userId;
@@ -231,7 +232,19 @@ public class TransactionsView extends VBox {
         });
         typeCol.setPrefWidth(80);
 
-        tv.getColumns().addAll(List.of(checkCol, dateCol, notesCol, categoryCol, paymentCol, typeCol, amountCol));
+        // Needs vs. Wants tag (Update 3 mission) - blank means "not tagged yet".
+        TableColumn<Transaction, String> tagCol = new TableColumn<>("Tag");
+        tagCol.setCellValueFactory(c -> new ReadOnlyStringWrapper(
+                c.getValue().getTag() == null ? "" : c.getValue().getTag()));
+        tagCol.setCellFactory(ComboBoxTableCell.forTableColumn(TAGS));
+        tagCol.setOnEditCommit(e -> {
+            Transaction t = e.getRowValue();
+            t.setTag(e.getNewValue());
+            db.tagTransaction(t.getTransactionId(), e.getNewValue());
+        });
+        tagCol.setPrefWidth(90);
+
+        tv.getColumns().addAll(List.of(checkCol, dateCol, notesCol, categoryCol, paymentCol, typeCol, amountCol, tagCol));
         return tv;
     }
 

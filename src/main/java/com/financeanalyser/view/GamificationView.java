@@ -2,15 +2,20 @@ package com.financeanalyser.view;
 
 import com.financeanalyser.controller.ForecastEngine;
 import com.financeanalyser.controller.GamificationEngine;
-import com.financeanalyser.controller.MissionGenerator;
+import com.financeanalyser.controller.MissionEvaluator;
 import com.financeanalyser.db.DatabaseManager;
 import com.financeanalyser.model.GamificationState;
+import com.financeanalyser.model.Mission;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
+import javafx.scene.control.TextField;
 import javafx.scene.layout.*;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +34,8 @@ public class GamificationView extends VBox {
     private HBox badgeRow;
     private Label missionsXpLabel;
     private VBox missionBox;
+    private TextField microSavingAmountInput;
+    private TextField microSavingNoteInput;
 
     public GamificationView(DatabaseManager db, int userId) {
         super(16);
@@ -82,8 +89,44 @@ public class GamificationView extends VBox {
         missionTop.getChildren().addAll(missionTitleBox, msp, missionsXpLabel);
         missionTop.setAlignment(Pos.CENTER_LEFT);
         missionBox = new VBox(14);
-        missionCard.getChildren().addAll(missionTop, missionBox);
+
+        // Quick-log a small deliberate saving (Micro-Swap mission) - instant XP per entry.
+        VBox logRow = new VBox(6);
+        Label logLabel = new Label("Log a micro-saving (e.g. “chose the cheaper tea, saved ₹20”)");
+        logLabel.getStyleClass().add("muted");
+        microSavingAmountInput = new TextField();
+        microSavingAmountInput.setPromptText("₹ saved");
+        microSavingAmountInput.setPrefWidth(90);
+        microSavingNoteInput = new TextField();
+        microSavingNoteInput.setPromptText("What did you do differently?");
+        HBox.setHgrow(microSavingNoteInput, Priority.ALWAYS);
+        Button logBtn = new Button("Log it (+" + MissionEvaluator.XP_MICRO_SAVING_LOG + " XP)");
+        logBtn.getStyleClass().add("btn-orange");
+        logBtn.setOnAction(e -> logMicroSaving());
+        HBox logInputRow = new HBox(8, microSavingAmountInput, microSavingNoteInput, logBtn);
+        logInputRow.setAlignment(Pos.CENTER_LEFT);
+        logRow.getChildren().addAll(logLabel, logInputRow);
+
+        missionCard.getChildren().addAll(missionTop, missionBox, logRow);
         getChildren().add(missionCard);
+    }
+
+    private void logMicroSaving() {
+        String amountText = microSavingAmountInput.getText();
+        double amount;
+        try {
+            amount = Double.parseDouble(amountText.trim());
+            if (amount <= 0) throw new NumberFormatException();
+        } catch (Exception ex) {
+            new Alert(Alert.AlertType.WARNING, "Enter the amount you saved as a positive number.").showAndWait();
+            return;
+        }
+        String note = microSavingNoteInput.getText();
+        db.recordMicroSaving(userId, LocalDate.now().toString(), amount, note);
+        db.awardXpAndStreak(userId, MissionEvaluator.XP_MICRO_SAVING_LOG, null);
+        microSavingAmountInput.clear();
+        microSavingNoteInput.clear();
+        refresh();
     }
 
     private VBox buildLevelCard() {
@@ -176,25 +219,32 @@ public class GamificationView extends VBox {
             badgeRow.getChildren().add(card);
         }
 
-        List<MissionGenerator.Mission> missions = MissionGenerator.generateWeeklyMissions(db, userId);
-        missionsXpLabel.setText("+" + (missions.size() * 100) + " XP available");
+        List<Mission> missions = MissionEvaluator.evaluateWeekly(db, userId);
+        int xpAvailable = 0;
+        for (Mission m : missions) if (!m.isCompleted()) xpAvailable += m.getXpReward();
+        missionsXpLabel.setText("+" + xpAvailable + " XP available");
         missionBox.getChildren().clear();
         for (int i = 0; i < missions.size(); i++) {
-            MissionGenerator.Mission m = missions.get(i);
+            Mission m = missions.get(i);
             VBox row = new VBox(6);
             HBox header = new HBox(10);
-            Label num = new Label(String.format("%02d", i + 1));
-            num.setStyle("-fx-text-fill: #F1531F; -fx-font-weight: bold;");
-            Label title = new Label(m.title);
+            Label num = new Label(m.isCompleted() ? "\u2713" : String.format("%02d", i + 1));
+            num.setStyle("-fx-text-fill: " + (m.isCompleted() ? "#2E9E5B" : "#F1531F") + "; -fx-font-weight: bold;");
+            VBox titleBox = new VBox(1);
+            Label title = new Label(m.getTitle());
             title.setStyle("-fx-font-weight: bold;");
+            Label desc = new Label(m.getDescription());
+            desc.getStyleClass().add("muted");
+            desc.setWrapText(true);
+            titleBox.getChildren().addAll(title, desc);
             Region sp = new Region();
             HBox.setHgrow(sp, Priority.ALWAYS);
-            Label progressLabel = new Label(String.format("\u20B9%,.0f of \u20B9%,.0f", m.progress, m.target));
-            progressLabel.getStyleClass().add("muted");
-            header.getChildren().addAll(num, title, sp, progressLabel);
+            Label xpLabel = new Label(m.isCompleted() ? "Done \u00B7 +" + m.getXpReward() + " XP" : "+" + m.getXpReward() + " XP");
+            xpLabel.getStyleClass().add("muted");
+            header.getChildren().addAll(num, titleBox, sp, xpLabel);
             header.setAlignment(Pos.CENTER_LEFT);
 
-            ProgressBar bar = new ProgressBar(m.target > 0 ? Math.min(1.0, m.progress / m.target) : 0);
+            ProgressBar bar = new ProgressBar(m.progressRatio());
             bar.setMaxWidth(Double.MAX_VALUE);
 
             row.getChildren().addAll(header, bar);
