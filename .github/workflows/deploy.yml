@@ -1,0 +1,42 @@
+name: Deploy JavaFX App to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main  # Change this to master if your default branch is master
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Deploy to GitHub Pages via jDeploy
+        run: |
+          npm install -g jdeploy
+          # This automatically compiles your app into WebAssembly and pushes it to your GitHub site
+          jdeploy gh-deploy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
