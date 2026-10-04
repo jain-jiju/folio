@@ -1,0 +1,14 @@
+{
+  "name": "Folio (JavaFX app in a virtual display via noVNC)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": {
+      "label": "Folio app (noVNC) - open this port in a browser, then click Connect",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "postStartCommand": "chmod +x .devcontainer/start-app.sh && nohup .devcontainer/start-app.sh > /tmp/start-app.log 2>&1 &"
+}
